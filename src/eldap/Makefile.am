@@ -10,4 +10,26 @@
 ## License for the specific language governing permissions and limitations under
 ## the License.
 
-SUBDIRS = couchdb eldap erlang-oauth etap ibrowse mochiweb
+eldapebindir = $(localerlanglibdir)/eldap/ebin
+
+eldap_file_collection = \
+    eldap.erl \
+    ELDAPv3.erl
+
+eldapebin_make_generated_file_list = \
+    eldap.beam \
+    ELDAPv3.beam
+
+eldapebin_DATA = \
+    $(eldapebin_make_generated_file_list)
+
+EXTRA_DIST =  \
+    $(eldap_file_collection) \
+	eldap.hrl \
+    ELDAPv3.hrl
+
+CLEANFILES = \
+    $(eldapebin_make_generated_file_list)
+
+%.beam: %.erl
+	$(ERLC) $(ERLC_FLAGS) $<

@@ -14,6 +14,7 @@
 -include("couch_db.hrl").
 
 -export([default_authentication_handler/1,special_test_authentication_handler/1]).
+-export ([ldap_authentication_handler/1]).
 -export([cookie_authentication_handler/1]).
 -export([null_authentication_handler/1]).
 -export([proxy_authentification_handler/1]).
@@ -347,3 +348,93 @@ to_int(Value) when is_integer(Value) ->
 make_cookie_time() ->
     {NowMS, NowS, _} = erlang:now(),
     NowMS * 1000000 + NowS.
+
+ldap_authentication_handler(Req) ->
+    LDAPUrl = couch_config:get
+        ("couch_httpd_auth", "auth_ldap_url", 
+            "false"),
+    case LDAPUrl of
+    "false" ->
+        throw({error, "No auth_ldap_url defined."});
+    _Else ->
+        {"ldap", LDAPHost, BaseDN, Attrdesc} = url_parse(LDAPUrl),
+        case basic_name_pw(Req) of
+        {User, Pass} ->
+            case eldap:open([LDAPHost], []) of
+            {ok, LDAPHandler} ->
+                UserDN = Attrdesc ++ "=" ++ User ++ "," ++ BaseDN,
+                case eldap:simple_bind(LDAPHandler, UserDN, Pass) of
+                ok -> 
+                    Req#httpd{user_ctx=#user_ctx{roles=[<<"_admin">>]}};
+                {error,invalidCredentials} ->
+                    throw({unauthorized, 
+                        <<"Name or password is incorrect.">>})
+                end;
+            _Else ->
+                throw({unauthorized, <<"Cannot connect to ldap server.">>})
+            end;
+        nil ->
+            throw({unauthorized, <<"Name and password is requested.">>})
+        end
+    end.
+    
+%% LDAP URL Parser, see rfc2255
+url_parse(Url) ->
+    {Scheme, Url1} = url_scheme(Url),
+    {LDAPServer, Url2} = url_host(Url1),
+    {BaseDN, Url3} = url_bindname(Url2),
+    {Attrdesc} = url_attr(Url3),
+    {Scheme, LDAPServer, BaseDN, Attrdesc}.
+
+url_scheme(Url) ->
+    case url_scheme(Url, []) of
+        no_scheme ->
+            {"", Url};
+        Res ->
+            Res
+    end.
+
+url_scheme([C | Rest], Acc) when ((C >= $a andalso C =< $z) orelse
+                                       (C >= $A andalso C =< $Z) orelse
+                                       (C >= $0 andalso C =< $9) orelse
+                                       C =:= $+ orelse C =:= $- orelse
+                                       C =:= $.) ->
+    url_scheme(Rest, [C | Acc]);
+url_scheme([$: | Rest], Acc=[_ | _]) ->
+    {string:to_lower(lists:reverse(Acc)), Rest};
+url_scheme(_Rest, _Acc) ->
+    no_scheme.
+
+url_host("//" ++ Rest) ->
+    url_host(Rest, []);
+url_host(Path) ->
+    {"", Path}.
+
+url_host("", Acc) ->
+    {lists:reverse(Acc), ""};
+url_host(Rest=[C | _], Acc) when C =:= $/; C =:= $?; C =:= $# ->
+    {lists:reverse(Acc), Rest};
+url_host([C | Rest], Acc) ->
+    url_host(Rest, [C | Acc]).
+
+url_bindname("/" ++ Rest) ->
+    url_bindname(Rest, []);
+url_bindname(Rest) ->
+    {"", Rest}.
+
+url_bindname("", Acc) ->
+    {lists:reverse(Acc), ""};
+url_bindname(Rest=[C | _], Acc) when C =:= $? ->
+    {lists:reverse(Acc), Rest};
+url_bindname([C | Rest], Acc) ->
+    url_bindname(Rest, [C | Acc]).
+
+url_attr("?" ++ Rest) ->
+    url_attr(Rest, []);
+url_attr(Rest) ->
+    {Rest}.
+
+url_attr("", Acc) ->
+    {lists:reverse(Acc)};
+url_attr([C | Rest], Acc) ->
+    url_attr(Rest, [C | Acc]).
