@@ -30,6 +30,10 @@ This product also includes the following third-party components:
 
    Copyright 2009, Chandrashekhar Mullaparthi
 
+ * Eldap (http://github.com/etnt/eldap/tree/master)
+
+   Copyright 2009, Torbjorn Tornkvist <etnt@redhoterlang.com>
+
  * Erlang OAuth (http://github.com/tim/erlang-oauth/tree/master)
 
    Copyright 2009, Tim Fletcher <http://tfletcher.com/>

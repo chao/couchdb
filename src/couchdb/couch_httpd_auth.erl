@@ -357,24 +357,45 @@ ldap_authentication_handler(Req) ->
     "false" ->
         throw({error, "No auth_ldap_url defined."});
     _Else ->
-        {"ldap", LDAPHost, BaseDN, Attrdesc} = url_parse(LDAPUrl),
         case basic_name_pw(Req) of
         {User, Pass} ->
+            {"ldap", LDAPHost, BaseDN, Attrdesc} = url_parse(LDAPUrl),
+            % ?LOG_INFO("LDAP URL, Host: ~p BaseDN: ~p Attrdesc: ~p", [LDAPHost, BaseDN, Attrdesc]),
             case eldap:open([LDAPHost], []) of
             {ok, LDAPHandler} ->
                 UserDN = Attrdesc ++ "=" ++ User ++ "," ++ BaseDN,
                 case eldap:simple_bind(LDAPHandler, UserDN, Pass) of
                 ok -> 
-                    Req#httpd{user_ctx=#user_ctx{roles=[<<"_admin">>]}};
+                    Req#httpd{user_ctx=#user_ctx{
+                        name=?l2b(User),
+                        roles=[<<"_admin">>]
+                    }};
                 {error,invalidCredentials} ->
                     throw({unauthorized, 
-                        <<"Name or password is incorrect.">>})
+                        <<"Name or password is incorrect.">>});
+                _Else ->
+                    ?LOG_ERROR("LDAP bind error: UserDN ~p", [UserDN]),
+                    throw({error, "Unable to bind to LDAP server."})
                 end;
             _Else ->
                 throw({unauthorized, <<"Cannot connect to ldap server.">>})
             end;
         nil ->
-            throw({unauthorized, <<"Name and password is requested.">>})
+            case couch_server:has_admins() of
+            true ->
+                %?LOG_INFO("has admins",[]),
+                Req;
+            false ->
+                %?LOG_INFO("has no admin",[]),
+                case couch_config:get("couch_httpd_auth", "require_valid_user", "false") of
+                    "true" -> 
+                        %?LOG_INFO("require valid user",[]),
+                        Req;
+                    _ -> 
+                        %?LOG_INFO("don't require valid user",[]),
+                        Req#httpd{user_ctx=#user_ctx{roles=[<<"_admin">>]}}
+                end
+            end
         end
     end.
     

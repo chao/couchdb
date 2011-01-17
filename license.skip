@@ -82,6 +82,7 @@
 ^src/couchdb/priv/couchjs
 ^src/couchdb/priv/couchspawnkillable
 ^src/couchdb/priv/stat_descriptions.cfg
+^src/eldap/*
 ^src/erlang-oauth/*
 ^src/etap/*
 ^src/ibrowse/*
