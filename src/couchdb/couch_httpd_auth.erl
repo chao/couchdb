@@ -360,16 +360,26 @@ ldap_authentication_handler(Req) ->
         case basic_name_pw(Req) of
         {User, Pass} ->
             {"ldap", LDAPHost, BaseDN, Attrdesc} = url_parse(LDAPUrl),
-            % ?LOG_INFO("LDAP URL, Host: ~p BaseDN: ~p Attrdesc: ~p", [LDAPHost, BaseDN, Attrdesc]),
+            %?LOG_INFO("LDAP URL, Host: ~p BaseDN: ~p Attrdesc: ~p", [LDAPHost, BaseDN, Attrdesc]),
             case eldap:open([LDAPHost], []) of
             {ok, LDAPHandler} ->
                 UserDN = Attrdesc ++ "=" ++ User ++ "," ++ BaseDN,
+                %?LOG_INFO("UserDN: ~p", [UserDN]),
                 case eldap:simple_bind(LDAPHandler, UserDN, Pass) of
-                ok -> 
-                    Req#httpd{user_ctx=#user_ctx{
-                        name=?l2b(User),
-                        roles=[<<"_admin">>]
-                    }};
+                ok ->
+                    {ok, {eldap_search_result, LDAPSearchResult, []}} = eldap:search(LDAPHandler, 
+                        [{base, BaseDN}, 
+                         {filter, eldap:equalityMatch("member", UserDN)}, 
+                         {attributes, [Attrdesc]}]),
+                    %?LOG_INFO("LDAPSearchResult: ~p", [LDAPSearchResult]),
+                    case length(LDAPSearchResult) of
+                    0 ->
+                        Req#httpd{user_ctx=#user_ctx{name=?l2b(User)}};
+                    _ ->
+                        Roles = ldap_groups(LDAPSearchResult, []),
+                        %?LOG_INFO("User: ~p Roles:~p", [User, Roles]),
+                        Req#httpd{user_ctx=#user_ctx{name=?l2b(User), roles=Roles}}
+                    end;
                 {error,invalidCredentials} ->
                     throw({unauthorized, 
                         <<"Name or password is incorrect.">>});
@@ -399,6 +409,12 @@ ldap_authentication_handler(Req) ->
         end
     end.
     
+ldap_groups([], Acc) ->
+    [list_to_binary(R) || R<-Acc];
+ldap_groups([C | Rest], Acc) ->
+    {eldap_entry,LDAPRecord, [{_, [GroupAttr]}]} = C,
+    ldap_groups(Rest, [GroupAttr | Acc]).
+        
 %% LDAP URL Parser, see rfc2255
 url_parse(Url) ->
     {Scheme, Url1} = url_scheme(Url),
