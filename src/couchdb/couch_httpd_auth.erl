@@ -356,39 +356,53 @@ ldap_authentication_handler(Req) ->
     case LDAPUrl of
     "false" ->
         throw({error, "No auth_ldap_url defined."});
-    _Else ->
+    _ ->
         case basic_name_pw(Req) of
         {User, Pass} ->
-            {"ldap", LDAPHost, BaseDN, Attrdesc} = url_parse(LDAPUrl),
-            %?LOG_INFO("LDAP URL, Host: ~p BaseDN: ~p Attrdesc: ~p", [LDAPHost, BaseDN, Attrdesc]),
-            case eldap:open([LDAPHost], []) of
-            {ok, LDAPHandler} ->
-                UserDN = Attrdesc ++ "=" ++ User ++ "," ++ BaseDN,
-                %?LOG_INFO("UserDN: ~p", [UserDN]),
-                case eldap:simple_bind(LDAPHandler, UserDN, Pass) of
-                ok ->
-                    {ok, {eldap_search_result, LDAPSearchResult, []}} = eldap:search(LDAPHandler, 
-                        [{base, BaseDN}, 
-                         {filter, eldap:equalityMatch("member", UserDN)}, 
-                         {attributes, [Attrdesc]}]),
-                    %?LOG_INFO("LDAPSearchResult: ~p", [LDAPSearchResult]),
-                    case length(LDAPSearchResult) of
-                    0 ->
-                        Req#httpd{user_ctx=#user_ctx{name=?l2b(User)}};
-                    _ ->
-                        Roles = ldap_groups(LDAPSearchResult, []),
-                        %?LOG_INFO("User: ~p Roles:~p", [User, Roles]),
-                        Req#httpd{user_ctx=#user_ctx{name=?l2b(User), roles=Roles}}
-                    end;
-                {error,invalidCredentials} ->
-                    throw({unauthorized, 
-                        <<"Name or password is incorrect.">>});
-                _Else ->
-                    ?LOG_ERROR("LDAP bind error: UserDN ~p", [UserDN]),
-                    throw({error, "Unable to bind to LDAP server."})
-                end;
-            _Else ->
-                throw({unauthorized, <<"Cannot connect to ldap server.">>})
+            try eldap:parse_ldap_url(LDAPUrl) of
+            {ok, LDAPServer, LDAPBindname, {attributes, [Attrdesc]}} ->
+                {LDAPHost, LDAPPort} = LDAPServer,
+                case length(LDAPBindname) of
+                0->
+                    throw({error, "LDAP URL is not correct."});
+                _->
+                    BaseDN = concat_bindname(LDAPBindname),
+                    %?LOG_INFO("Host:~p, Port:~p ~n BaseDN: ~p ~n LDAPAttributes: ~p ~n", [LDAPHost, LDAPPort, BaseDN, Attrdesc]),
+                    case eldap:open([LDAPHost], [{port, LDAPPort}]) of
+                    {ok, LDAPHandler} ->
+                        UserDNList = lists:append([Attrdesc ++ "=" ++ User], BaseDN),
+                        UserDN = string_join(",", UserDNList),
+                        %?LOG_INFO("UserDN : ~p ~n", [UserDN]),
+                        case eldap:simple_bind(LDAPHandler, UserDN, Pass) of
+                        ok ->
+                            StrBaseDN = string_join(",", BaseDN),
+                            %?LOG_INFO("Connected to LDAP Server with UserDN: ~p, Pass: ~p", [UserDN, Pass]),
+                            {ok, {eldap_search_result, LDAPSearchResult, []}} = eldap:search(LDAPHandler, 
+                                [{base, StrBaseDN}, 
+                                 {filter, eldap:equalityMatch("member", UserDN)}, 
+                                 {attributes, [Attrdesc]}]),
+                            %?LOG_INFO("LDAPSearchResult: ~p", [LDAPSearchResult]),
+                            case length(LDAPSearchResult) of
+                            0 ->
+                                Req#httpd{user_ctx=#user_ctx{name=?l2b(User)}};
+                            _ ->
+                                Roles = ldap_groups(LDAPSearchResult, []),
+                                %?LOG_INFO("User: ~p Roles:~p", [User, Roles]),
+                                Req#httpd{user_ctx=#user_ctx{name=?l2b(User), roles=Roles}}
+                            end;
+                        {error,invalidCredentials} ->
+                            throw({unauthorized, <<"Name or password is incorrect.">>});
+                        _ ->
+                            throw({error, "Unable to validate user on LDAP server."})
+                        end;
+                    _->
+                        ?LOG_ERROR("Unable to connect to LDAP, Host: ~p Port: ~p", [LDAPHost, LDAPPort]),
+                        throw({error, "Unable to bind to LDAP server."})
+                    end
+                end
+            catch
+                error: _ ->
+                    throw({error, "LDAP URL parse error."})
             end;
         nil ->
             case couch_server:has_admins() of
@@ -408,70 +422,26 @@ ldap_authentication_handler(Req) ->
             end
         end
     end.
-    
 ldap_groups([], Acc) ->
     [list_to_binary(R) || R<-Acc];
 ldap_groups([C | Rest], Acc) ->
     {eldap_entry,LDAPRecord, [{_, [GroupAttr]}]} = C,
     ldap_groups(Rest, [GroupAttr | Acc]).
-        
-%% LDAP URL Parser, see rfc2255
-url_parse(Url) ->
-    {Scheme, Url1} = url_scheme(Url),
-    {LDAPServer, Url2} = url_host(Url1),
-    {BaseDN, Url3} = url_bindname(Url2),
-    {Attrdesc} = url_attr(Url3),
-    {Scheme, LDAPServer, BaseDN, Attrdesc}.
 
-url_scheme(Url) ->
-    case url_scheme(Url, []) of
-        no_scheme ->
-            {"", Url};
-        Res ->
-            Res
-    end.
+concat_bindname(Bindname) ->
+    concat_bindname(Bindname, []).
+concat_bindname([], Acc) -> lists:reverse(Acc);
+    %[list_to_binary(R) || R<-lists:reverse(Acc)];
+concat_bindname([C | Rest], Acc) ->
+    [{attribute_type_and_value, Name, Value}] = C,
+    concat_bindname(Rest, [Name ++ "=" ++ Value | Acc]).
 
-url_scheme([C | Rest], Acc) when ((C >= $a andalso C =< $z) orelse
-                                       (C >= $A andalso C =< $Z) orelse
-                                       (C >= $0 andalso C =< $9) orelse
-                                       C =:= $+ orelse C =:= $- orelse
-                                       C =:= $.) ->
-    url_scheme(Rest, [C | Acc]);
-url_scheme([$: | Rest], Acc=[_ | _]) ->
-    {string:to_lower(lists:reverse(Acc)), Rest};
-url_scheme(_Rest, _Acc) ->
-    no_scheme.
+string_join(Join, L) ->
+    string_join(Join, L, fun(E) -> E end).
 
-url_host("//" ++ Rest) ->
-    url_host(Rest, []);
-url_host(Path) ->
-    {"", Path}.
-
-url_host("", Acc) ->
-    {lists:reverse(Acc), ""};
-url_host(Rest=[C | _], Acc) when C =:= $/; C =:= $?; C =:= $# ->
-    {lists:reverse(Acc), Rest};
-url_host([C | Rest], Acc) ->
-    url_host(Rest, [C | Acc]).
-
-url_bindname("/" ++ Rest) ->
-    url_bindname(Rest, []);
-url_bindname(Rest) ->
-    {"", Rest}.
-
-url_bindname("", Acc) ->
-    {lists:reverse(Acc), ""};
-url_bindname(Rest=[C | _], Acc) when C =:= $? ->
-    {lists:reverse(Acc), Rest};
-url_bindname([C | Rest], Acc) ->
-    url_bindname(Rest, [C | Acc]).
-
-url_attr("?" ++ Rest) ->
-    url_attr(Rest, []);
-url_attr(Rest) ->
-    {Rest}.
-
-url_attr("", Acc) ->
-    {lists:reverse(Acc)};
-url_attr([C | Rest], Acc) ->
-    url_attr(Rest, [C | Acc]).
+string_join(_Join, L=[], _Conv) ->
+    L;
+string_join(Join, [H|Q], Conv) ->
+    lists:flatten(lists:concat(
+        [Conv(H)|lists:map(fun(E) -> [Join, Conv(E)] end, Q)]
+    )).
